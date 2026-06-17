@@ -853,13 +853,73 @@ def post_process(df: pd.DataFrame) -> pd.DataFrame:
             df = df.iloc[1:].reset_index(drop=True)
             logger.info("Đã đặt dòng đầu làm header cột.")
 
+    # --- Lọc bỏ dòng trống (chỉ có STT hoặc rỗng toàn bộ) và dòng Tổng cộng ---
+    if not df.empty:
+        # Xóa các cột liên quan đến Tên file nguồn
+        cols_to_drop = [
+            c for c in df.columns 
+            if any(k in str(c).lower() for k in ["file nguồn", "file nguon", "tên file", "ten file", "source file"])
+        ]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+            logger.info(f"Đã xóa các cột tên file nguồn: {cols_to_drop}")
+
+    if not df.empty:
+        # 1. Tìm cột STT bằng header hoặc dữ liệu số thứ tự tăng dần
+        stt_col = None
+        stt_kws = ["stt", "no.", "index", "số thứ tự", "sothutu"]
+        for c in df.columns:
+            c_norm = str(c).strip().lower().replace('\n', ' ').replace('\r', ' ')
+            if any(kw in c_norm for kw in stt_kws):
+                stt_col = c
+                break
+                
+        if stt_col is None:
+            for c in df.columns:
+                col_vals = df[c].astype(str).str.strip().tolist()
+                non_empty = [v for v in col_vals if v not in ("", "nan", "none")]
+                if len(non_empty) >= 2:
+                    try:
+                        ints = [int(float(v)) for v in non_empty]
+                        if all(0 < x < 500 for x in ints) and ints == sorted(ints):
+                            stt_col = c
+                            break
+                    except ValueError:
+                        continue
+                
+        # 2. Định nghĩa dòng trống (các cột ngoại trừ STT đều rỗng hoặc bằng 0)
+        check_cols = [c for c in df.columns if c != stt_col]
+        if check_cols:
+            def is_empty_data_row(row):
+                for c in check_cols:
+                    val = str(row[c]).replace('\xa0', ' ').strip().lower()
+                    if val not in ("", "nan", "none", "0", "0.0"):
+                        return False
+                return True
+            df = df[~df.apply(is_empty_data_row, axis=1)]
+            
+        # 3. Định nghĩa dòng Tổng cộng với chuẩn hóa Unicode (NFC)
+        import unicodedata
+        total_kws = {"tổng cộng", "tong cong", "tổng số", "tong so", "cộng:", "cong:", "cộng dòng", "cong dong", "cộng", "total", "grand total"}
+        total_kws_nfc = {unicodedata.normalize('NFC', kw) for kw in total_kws}
+        
+        def is_total_row(row):
+            for cell in row:
+                cell_val = str(cell).replace('\xa0', ' ').strip().lower().replace(':', '').strip()
+                cell_norm = unicodedata.normalize('NFC', cell_val)
+                if any(kw == cell_norm or cell_norm.startswith(kw) for kw in total_kws_nfc) or "t픀" in cell_norm or "c픀" in cell_norm:
+                    return True
+            return False
+        df = df[~df.apply(is_total_row, axis=1)]
+        df = df.reset_index(drop=True)
+
     return df
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SAVE TO EXCEL
 # ══════════════════════════════════════════════════════════════════════════════
-def save_to_excel(dataframes: List[pd.DataFrame], output_path: str) -> str:
+def save_to_excel(dataframes: List[pd.DataFrame], output_path: str, sheet_names: Optional[List[str]] = None) -> str:
     if not dataframes:
         raise ValueError("Không có bảng nào để lưu.")
 
@@ -885,7 +945,10 @@ def save_to_excel(dataframes: List[pd.DataFrame], output_path: str) -> str:
     right_al  = Alignment(horizontal="right",  vertical="center", wrap_text=True)
 
     for idx, df in enumerate(dataframes):
-        ws = wb.create_sheet(title=f"Bảng_{idx + 1}")
+        title = f"Bảng_{idx + 1}"
+        if sheet_names and idx < len(sheet_names):
+            title = sheet_names[idx]
+        ws = wb.create_sheet(title=title)
         
         # Luôn hiển thị đường lưới trong Excel
         ws.sheet_view.showGridLines = True
@@ -909,15 +972,17 @@ def save_to_excel(dataframes: List[pd.DataFrame], output_path: str) -> str:
                 if v is None or (isinstance(v, float) and np.isnan(v)):
                     native_row.append(None)
                 else:
-                    # Chuyển đổi float.0 (như 1.0, 5.0) sang int cho đẹp và đúng kiểu dữ liệu
                     val_str = str(v).strip()
+                    # Loại bỏ đơn vị tiền tệ và dấu phẩy phân tách phần nghìn để parse sang số chính xác
+                    val_clean = val_str.lower().replace("đ", "").replace("vnd", "").replace("vân", "").strip()
+                    val_clean = val_clean.replace(",", "")
                     try:
-                        if val_str.endswith(".0"):
-                            native_row.append(int(val_str[:-2]))
-                        elif val_str.isdigit():
-                            native_row.append(int(val_str))
+                        if val_clean.endswith(".0"):
+                            native_row.append(int(val_clean[:-2]))
+                        elif val_clean.isdigit():
+                            native_row.append(int(val_clean))
                         else:
-                            val_float = float(val_str)
+                            val_float = float(val_clean)
                             if val_float.is_integer():
                                 native_row.append(int(val_float))
                             else:
@@ -951,6 +1016,59 @@ def save_to_excel(dataframes: List[pd.DataFrame], output_path: str) -> str:
                         cell.number_format = "#,##0.00"
                 else:
                     cell.alignment = left_al
+
+        # Thêm dòng Tổng cộng nếu có cột Số lượng hoặc Thành tiền
+        qty_col_idx = None
+        total_col_idx = None
+        
+        qty_kws = ["số lượng", "so luong", "số lượng", "qty", "quantity", "sl"]
+        total_kws = ["thành tiền", "thanh tien", "thành tiền", "amount", "total", "tt"]
+        
+        for ci, h in enumerate(headers, 1):
+            h_norm = str(h).strip().lower().replace('\n', ' ').replace('\r', ' ')
+            if "stt" in h_norm:
+                continue
+            if any(kw in h_norm for kw in qty_kws) and qty_col_idx is None:
+                qty_col_idx = ci
+            elif any(kw in h_norm for kw in total_kws) and total_col_idx is None:
+                total_col_idx = ci
+
+        if len(df) > 0 and (qty_col_idx or total_col_idx):
+            summary_row_idx = ws.max_row + 1
+            ws.row_dimensions[summary_row_idx].height = 24
+            
+            # Đặt nhãn "Tổng cộng :" vào cột ngay trước cột tổng đầu tiên (hoặc cột 1)
+            label_col = 1
+            if qty_col_idx and qty_col_idx > 1:
+                label_col = qty_col_idx - 1
+            elif total_col_idx and total_col_idx > 1:
+                label_col = total_col_idx - 1
+                
+            # Đảm bảo label_col không trùng với bất kỳ cột tổng nào
+            if label_col == qty_col_idx or label_col == total_col_idx:
+                label_col = 1
+                
+            ws.cell(summary_row_idx, label_col, "Tổng cộng :")
+            lbl_cell = ws.cell(summary_row_idx, label_col)
+            lbl_cell.font = Font(name="Segoe UI", bold=True, size=10)
+            lbl_cell.alignment = Alignment(horizontal="right", vertical="center")
+            
+            # Áp dụng viền và font bold cho toàn bộ hàng Tổng cộng
+            for ci in range(1, len(headers) + 1):
+                c = ws.cell(summary_row_idx, ci)
+                c.border = thin_border
+                c.font = Font(name="Segoe UI", bold=True, size=10)
+                
+                if ci == qty_col_idx:
+                    col_letter = get_column_letter(ci)
+                    c.value = f"=SUM({col_letter}2:{col_letter}{summary_row_idx - 1})"
+                    c.alignment = right_al
+                    c.number_format = "#,##0"
+                elif ci == total_col_idx:
+                    col_letter = get_column_letter(ci)
+                    c.value = f"=SUM({col_letter}2:{col_letter}{summary_row_idx - 1})"
+                    c.alignment = right_al
+                    c.number_format = "#,##0.00"
 
         ws.freeze_panes = "A2"
 

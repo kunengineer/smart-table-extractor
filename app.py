@@ -18,12 +18,194 @@ try:
 except ImportError as _e:
     _MISSING = [str(_e)]
 
+import converter
+importlib.reload(converter)
 from converter import (
     detect_and_convert,
     get_captured_logs,
     UnsupportedFormatError,
     ExtractionFailedError,
+    save_to_excel,
 )
+
+def aggregate_duplicate_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Gộp các dòng dữ liệu trùng lặp: cộng dồn số lượng, giữ nguyên đơn giá,
+    tính lại thành tiền và đánh lại số thứ tự (STT).
+    """
+    if df.empty:
+        return df
+
+    import re
+
+    # Chuẩn hóa tên cột để tìm các cột liên quan
+    cols = list(df.columns)
+    
+    stt_col = None
+    qty_col = None
+    price_col = None
+    total_col = None
+    
+    stt_kws = ["stt", "no.", "index", "số thứ tự", "sothutu"]
+    qty_kws = ["số lượng", "so luong", "số lượng", "qty", "quantity", "sl"]
+    price_kws = ["đơn giá", "don gia", "đơn giá", "price", "unit price", "dg"]
+    total_kws = ["thành tiền", "thanh tien", "thành tiền", "amount", "total", "tt"]
+    
+    for c in cols:
+        c_norm = str(c).strip().lower().replace('\n', ' ').replace('\r', ' ')
+        
+        if any(kw in c_norm for kw in stt_kws) and stt_col is None:
+            stt_col = c
+        elif any(kw in c_norm for kw in qty_kws) and qty_col is None:
+            qty_col = c
+        elif any(kw in c_norm for kw in price_kws) and price_col is None:
+            price_col = c
+        elif any(kw in c_norm for kw in total_kws) and total_col is None:
+            total_col = c
+
+    # Nếu không tìm thấy cột Số lượng thì không gộp được
+    if not qty_col:
+        return df
+
+    # Tìm cột nguồn dữ liệu nếu có để loại khỏi khóa gộp nhằm gộp trùng giữa các file
+    src_col = None
+    for c in cols:
+        if str(c).strip().lower() == "tên file nguồn":
+            src_col = c
+            break
+
+    # Các cột dùng làm khóa gộp (loại bỏ STT, Số lượng, Đơn giá, Thành tiền, Tên file nguồn)
+    exclude_cols = {stt_col, qty_col, price_col, total_col, src_col}
+    group_keys = [c for c in cols if c not in exclude_cols]
+    
+    if not group_keys:
+        return df
+
+    # Hàm chuyển đổi giá trị sang dạng số an toàn
+    def to_numeric(val):
+        if pd.isna(val) or val == "":
+            return 0.0
+        val_str = str(val).strip().replace(',', '')
+        # Loại bỏ các ký tự phi số (trừ dấu chấm và dấu trừ)
+        val_str = re.sub(r'[^\d\.\-]', '', val_str)
+        try:
+            return float(val_str) if val_str else 0.0
+        except ValueError:
+            return 0.0
+
+    df_temp = df.copy()
+    
+    # Ép kiểu dữ liệu các cột tính toán về dạng số
+    df_temp[qty_col] = df_temp[qty_col].apply(to_numeric)
+    if price_col:
+        df_temp[price_col] = df_temp[price_col].apply(to_numeric)
+    if total_col:
+        df_temp[total_col] = df_temp[total_col].apply(to_numeric)
+
+    # Đảm bảo các cột khóa gộp được chuẩn hóa để gom nhóm chính xác
+    for gk in group_keys:
+        df_temp[gk] = df_temp[gk].fillna('').astype(str).str.strip()
+
+    # Nhóm và gộp dữ liệu
+    grouped = df_temp.groupby(group_keys, as_index=False)
+    
+    agg_dict = {qty_col: 'sum'}
+    if price_col:
+        agg_dict[price_col] = 'first' # Giữ đơn giá đầu tiên
+    if total_col:
+        agg_dict[total_col] = 'sum'
+    if src_col:
+        agg_dict[src_col] = lambda x: ", ".join(sorted(list(set(str(v).strip() for v in x if pd.notna(v) and str(v).strip() != ""))))
+        
+    result_df = grouped.agg(agg_dict)
+    
+    # Tính toán lại Thành tiền nếu có Đơn giá và Số lượng
+    if price_col and total_col:
+        result_df[total_col] = result_df[qty_col] * result_df[price_col]
+        
+    # Đánh lại STT nếu có
+    if stt_col:
+        result_df[stt_col] = range(1, len(result_df) + 1)
+        
+    # Khôi phục thứ tự các cột ban đầu
+    ordered_cols = []
+    for c in cols:
+        if c in result_df.columns:
+            ordered_cols.append(c)
+    if stt_col and stt_col not in ordered_cols:
+        ordered_cols.insert(0, stt_col)
+        
+    result_df = result_df[ordered_cols]
+    
+    # Chuyển đổi các số nguyên về dạng int cho đẹp mắt
+    for c in result_df.columns:
+        if c in [qty_col, price_col, total_col]:
+            try:
+                if (result_df[c] % 1 == 0).all():
+                    result_df[c] = result_df[c].astype(int)
+            except Exception:
+                pass
+                
+    return result_df
+
+def clean_loaded_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Lọc sạch dataframe khi load từ file Excel đã convert:
+    - Bỏ các cột liên quan đến Tên file nguồn.
+    - Bỏ dòng Tổng cộng (để không bị gộp trùng hoặc tạo dòng trống).
+    - Bỏ các dòng rỗng chỉ chứa số thứ tự (STT).
+    """
+    if df.empty:
+        return df
+
+    import unicodedata
+    
+    # 1. Xóa các cột liên quan đến Tên file nguồn
+    cols_to_drop = [
+        c for c in df.columns 
+        if any(k in str(c).lower() for k in ["file nguồn", "file nguon", "tên file", "ten file", "source file"])
+    ]
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+
+    if df.empty:
+        return df
+
+    # 2. Xác định cột STT
+    stt_col = None
+    stt_kws = ["stt", "no.", "index", "số thứ tự", "sothutu"]
+    for c in df.columns:
+        c_norm = str(c).strip().lower().replace('\n', ' ').replace('\r', ' ')
+        if any(kw in c_norm for kw in stt_kws):
+            stt_col = c
+            break
+
+    # 3. Lọc bỏ dòng Tổng cộng
+    total_kws = {"tổng cộng", "tong cong", "tổng số", "tong so", "cộng:", "cong:", "cộng dòng", "cong dong", "cộng", "total", "grand total"}
+    total_kws_nfc = {unicodedata.normalize('NFC', kw) for kw in total_kws}
+    
+    def is_total_row(row):
+        for cell in row:
+            cell_val = str(cell).replace('\xa0', ' ').strip().lower().replace(':', '').strip()
+            cell_norm = unicodedata.normalize('NFC', cell_val)
+            if any(kw == cell_norm or cell_norm.startswith(kw) for kw in total_kws_nfc) or "t픀" in cell_norm or "c픀" in cell_norm:
+                return True
+        return False
+    
+    df = df[~df.apply(is_total_row, axis=1)]
+
+    # 4. Lọc bỏ dòng trống (chỉ có STT hoặc rỗng toàn bộ hoặc chỉ có 0)
+    check_cols = [c for c in df.columns if c != stt_col]
+    if check_cols:
+        def is_empty_data_row(row):
+            for c in check_cols:
+                val = str(row[c]).replace('\xa0', ' ').strip().lower()
+                if val not in ("", "nan", "none", "0", "0.0"):
+                    return False
+            return True
+        df = df[~df.apply(is_empty_data_row, axis=1)]
+
+    return df.reset_index(drop=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -212,6 +394,8 @@ st.html("""
 # Initialize session state variables
 if "conversion_results" not in st.session_state:
     st.session_state.conversion_results = {}
+if "merged_result" not in st.session_state:
+    st.session_state.merged_result = None
 if "last_uploaded_names" not in st.session_state:
     st.session_state.last_uploaded_names = []
 
@@ -226,11 +410,49 @@ uploaded_files = st.file_uploader(
 current_names = [f.name for f in uploaded_files] if uploaded_files else []
 if current_names != st.session_state.last_uploaded_names:
     st.session_state.conversion_results = {}
+    st.session_state.merged_result = None
     st.session_state.last_uploaded_names = current_names
 
 if not uploaded_files:
     st.info("⬆️ Tải lên các file để bắt đầu.")
     st.stop()
+
+# ── Cấu hình gộp file ────────────────────────────────────────────────────────
+merge_enabled = False
+merge_mode = "Nối tiếp"
+add_source_col = False
+aggregate_dups = True
+merged_filename = "combined_converted.xlsx"
+
+if len(uploaded_files) > 1:
+    with st.expander("⚙️ Tùy chọn gộp file Excel (Chuyển đổi nhiều file)", expanded=True):
+        merge_enabled = st.checkbox(
+            "Gộp tất cả các file thành 1 file Excel duy nhất",
+            value=True,
+            help="Nếu bật, hệ thống sẽ tự động ghép dữ liệu của các file thành công vào 1 file Excel chung."
+        )
+        if merge_enabled:
+            merge_mode = st.radio(
+                "Phương thức gộp:",
+                options=[
+                    "Nối tiếp dữ liệu (Gộp các dòng của các bảng có cùng cột)",
+                    "Mỗi file là một Sheet riêng biệt"
+                ],
+                index=0,
+                help="Nối tiếp dữ liệu phù hợp khi các file có cùng cấu trúc cột. Mỗi file một sheet phù hợp khi cấu trúc các file khác nhau."
+            )
+            if "Nối tiếp dữ liệu" in merge_mode:
+                aggregate_dups = st.checkbox(
+                    "Gộp các dòng trùng lặp (Cộng dồn số lượng và tính lại thành tiền)",
+                    value=True,
+                    help="Nếu bật, hệ thống tự động tìm các dòng có cùng thông tin sản phẩm, đơn vị tính... để cộng dồn số lượng và tính toán lại thành tiền."
+                )
+            merged_filename = st.text_input(
+                "Tên file Excel sau khi gộp:",
+                value="combined_converted.xlsx"
+            ).strip()
+            if not merged_filename.endswith(".xlsx"):
+                merged_filename += ".xlsx"
 
 # ── Nút + metric ────────────────────────────────────────────────────────────
 total_size = sum(f.size for f in uploaded_files)
@@ -250,6 +472,7 @@ with c1:
 if run:
     # Clear previous conversion results when starting a new run
     st.session_state.conversion_results = {}
+    st.session_state.merged_result = None
     
     # Process each file sequentially
     for idx, uploaded in enumerate(uploaded_files):
@@ -292,6 +515,7 @@ if run:
                         xl = pd.ExcelFile(io.BytesIO(excel_bytes))
                         for sheet in xl.sheet_names:
                             df = xl.parse(sheet)
+                            df = clean_loaded_dataframe(df)
                             sheets_info.append({
                                 "name": sheet,
                                 "rows": len(df),
@@ -327,6 +551,123 @@ if run:
         # Clear the status indicator widget to keep UI clean
         status_placeholder.empty()
 
+    # Gộp file nếu cấu hình được bật
+    if merge_enabled:
+        success_files = [f for f in st.session_state.conversion_results if st.session_state.conversion_results[f]["ok"]]
+        if len(success_files) > 1:
+            with st.spinner("🔄 Đang tiến hành gộp các file Excel..."):
+                try:
+                    if "Nối tiếp dữ liệu" in merge_mode:
+                        dfs_to_concat = []
+                        for fname in success_files:
+                            s_info_list = st.session_state.conversion_results[fname]["sheets_info"]
+                            for s_info in s_info_list:
+                                df_copy = s_info["df"].copy()
+                                if add_source_col:
+                                    df_copy.insert(0, "Tên file nguồn", fname)
+                                dfs_to_concat.append(df_copy)
+                        
+                        if dfs_to_concat:
+                            combined_df = pd.concat(dfs_to_concat, ignore_index=True)
+                            if aggregate_dups:
+                                combined_df = aggregate_duplicate_rows(combined_df)
+                            
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_merged:
+                                tmp_merged_path = tmp_merged.name
+                            try:
+                                save_to_excel([combined_df], tmp_merged_path, sheet_names=["Du_lieu_gop"])
+                                with open(tmp_merged_path, "rb") as f:
+                                    merged_bytes = f.read()
+                                
+                                xl = pd.ExcelFile(io.BytesIO(merged_bytes))
+                                merged_sheets_info = []
+                                for sheet in xl.sheet_names:
+                                    df = xl.parse(sheet)
+                                    merged_sheets_info.append({
+                                        "name": sheet,
+                                        "rows": len(df),
+                                        "cols": len(df.columns),
+                                        "df": df,
+                                    })
+                                
+                                st.session_state.merged_result = {
+                                    "ok": True,
+                                    "filename": merged_filename,
+                                    "excel_bytes": merged_bytes,
+                                    "sheets_info": merged_sheets_info,
+                                }
+                            finally:
+                                if os.path.exists(tmp_merged_path):
+                                    os.remove(tmp_merged_path)
+                    else:  # Mỗi file là một Sheet riêng biệt
+                        dfs = []
+                        sheet_names = []
+                        for fname in success_files:
+                            base_name = os.path.splitext(fname)[0]
+                            s_info_list = st.session_state.conversion_results[fname]["sheets_info"]
+                            for s_info in s_info_list:
+                                dfs.append(s_info["df"])
+                                if len(s_info_list) > 1:
+                                    combined_name = f"{base_name}_{s_info['name']}"
+                                else:
+                                    combined_name = base_name
+                                
+                                # Clean sheet name
+                                invalid_chars = ['\\', '/', '?', '*', ':', '[', ']']
+                                clean_name = combined_name
+                                for c in invalid_chars:
+                                    clean_name = clean_name.replace(c, '')
+                                clean_name = clean_name.strip()[:30]
+                                if not clean_name:
+                                    clean_name = "Sheet"
+                                sheet_names.append(clean_name)
+                        
+                        # De-duplicate sheet names
+                        seen = {}
+                        final_sheet_names = []
+                        for name in sheet_names:
+                            if name in seen:
+                                seen[name] += 1
+                                suffix_name = f"{name}_{seen[name]}"[:30]
+                                final_sheet_names.append(suffix_name)
+                            else:
+                                seen[name] = 0
+                                final_sheet_names.append(name)
+                        
+                        if dfs:
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_merged:
+                                tmp_merged_path = tmp_merged.name
+                            try:
+                                save_to_excel(dfs, tmp_merged_path, sheet_names=final_sheet_names)
+                                with open(tmp_merged_path, "rb") as f:
+                                    merged_bytes = f.read()
+                                
+                                xl = pd.ExcelFile(io.BytesIO(merged_bytes))
+                                merged_sheets_info = []
+                                for sheet in xl.sheet_names:
+                                    df = xl.parse(sheet)
+                                    merged_sheets_info.append({
+                                        "name": sheet,
+                                        "rows": len(df),
+                                        "cols": len(df.columns),
+                                        "df": df,
+                                    })
+                                
+                                st.session_state.merged_result = {
+                                    "ok": True,
+                                    "filename": merged_filename,
+                                    "excel_bytes": merged_bytes,
+                                    "sheets_info": merged_sheets_info,
+                                }
+                            finally:
+                                if os.path.exists(tmp_merged_path):
+                                    os.remove(tmp_merged_path)
+                except Exception as exc:
+                    st.session_state.merged_result = {
+                        "ok": False,
+                        "err_msg": f"Lỗi khi gộp file: {exc}"
+                    }
+
 # ══════════════════════════════════════════════════════════════════════════════
 # RENDER RESULTS FROM SESSION STATE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -334,9 +675,74 @@ if st.session_state.conversion_results:
     results = st.session_state.conversion_results
     
     st.markdown("### 📊 Kết quả chuyển đổi")
-    
-    # Check if there are multiple successful conversions to show "Download All" ZIP button
+
+    # ── Hiển thị kết quả file gộp ────────────────────────────────────────────────
     success_files = [f for f in results if results[f]["ok"]]
+    if "merged_result" in st.session_state and st.session_state.merged_result:
+        merged = st.session_state.merged_result
+        if merged["ok"]:
+            st.html(f"""
+            <div style="background: linear-gradient(135deg, #EBF8FF 0%, #D2E9F9 100%); border: 1.5px solid #2B6CB0; color: #2B6CB0; padding: 20px; border-radius: 16px; margin-bottom: 20px; box-shadow: 0 8px 24px rgba(43, 108, 176, 0.12); animation: fadeInUp 0.6s ease;">
+              <div style="display: flex; align-items: center; gap: 14px;">
+                <span style="font-size: 2rem;">🗂️</span>
+                <div>
+                  <h4 style="margin: 0; color: #1A365D; font-family: 'Outfit', sans-serif; font-size: 1.25rem; font-weight: 700;">File Excel Gộp Duy Nhất Đã Sẵn Sàng</h4>
+                  <p style="margin: 4px 0 0; color: #2D3748; font-size: 0.9rem; opacity: 0.95;">
+                    Đã ghép dữ liệu từ <b>{len(success_files)}</b> file thành công thành 1 file Excel chung.
+                  </p>
+                </div>
+              </div>
+            </div>
+            """)
+            
+            merged_sheets = merged["sheets_info"]
+            total_m_rows = sum(s["rows"] for s in merged_sheets)
+            max_m_cols = max((s["cols"] for s in merged_sheets), default=0)
+            
+            st.html(f"""
+            <div class="stat-row">
+              <div class="stat-card"><div class="num">{len(merged_sheets)}</div><div class="lbl">Bảng gộp (sheet)</div></div>
+              <div class="stat-card"><div class="num">{total_m_rows:,}</div><div class="lbl">Tổng số dòng gộp</div></div>
+              <div class="stat-card"><div class="num">{max_m_cols}</div><div class="lbl">Số cột tối đa</div></div>
+              <div class="stat-card"><div class="num">{len(merged['excel_bytes']) // 1024} KB</div><div class="lbl">File gộp Excel</div></div>
+            </div>
+            """)
+            
+            st.download_button(
+                label=f"📥 Tải xuống File Excel GỘP ({merged['filename']})",
+                data=merged["excel_bytes"],
+                file_name=merged["filename"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="download_merged_excel"
+            )
+            
+            st.markdown("##### 👀 Xem trước dữ liệu gộp")
+            m_tab_labels = [
+                f"📋 {s['name']}  ({s['rows']} dòng × {s['cols']} cột)"
+                for s in merged_sheets
+            ]
+            m_tabs = st.tabs(m_tab_labels)
+            for m_sub_tab, m_info in zip(m_tabs, merged_sheets):
+                with m_sub_tab:
+                    st.html(
+                        f'<div class="tab-meta">'
+                        f'📌 <b>{m_info["rows"]}</b> dòng · <b>{m_info["cols"]}</b> cột'
+                        f'</div>'
+                    )
+                    if m_info["df"].empty:
+                        st.info("Bảng gộp không có dữ liệu.")
+                    else:
+                        st.dataframe(
+                            m_info["df"].head(100),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+            st.markdown("<div style='margin-bottom: 30px;'></div>", unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown("### 📄 Chi tiết từng file gốc")
+        else:
+            st.error(f"Lỗi khi gộp file: {merged['err_msg']}")
     if len(success_files) > 1:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
