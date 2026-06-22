@@ -396,6 +396,35 @@ div.block-container {
     }
 }
 </style>
+
+<script>
+    (function() {
+        function hideParentElements() {
+            try {
+                const parentDoc = window.parent.document;
+                const selectors = [
+                    '[class*="viewerBadge"]',
+                    '[class*="profileContainer"]',
+                    '[class*="profilePreview"]',
+                    '[class*="stManageAppButton"]'
+                ];
+                selectors.forEach(selector => {
+                    const elements = parentDoc.querySelectorAll(selector);
+                    elements.forEach(el => {
+                        el.style.display = 'none';
+                        el.style.visibility = 'hidden';
+                    });
+                });
+            } catch (e) {
+                // Ignore any cross-origin wrapper restrictions
+            }
+        }
+        
+        // Execute immediately and then poll every 300ms to handle async rendering
+        hideParentElements();
+        setInterval(hideParentElements, 300);
+    })();
+</script>
 """)
 
 if _MISSING:
