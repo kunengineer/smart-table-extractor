@@ -239,6 +239,16 @@ div[data-testid="stManageAppButton"] {
     display: none !important;
 }
 
+/* Hide Streamlit Community Cloud bottom-right badges (crown and avatar) */
+[class^="viewerBadge"], [class*="viewerBadge"] {
+    display: none !important;
+}
+
+/* Hide Streamlit status widget */
+div[data-testid="stStatusWidget"] {
+    display: none !important;
+}
+
 html, body, [class*="css"] {
     font-family: 'Inter', sans-serif;
 }
