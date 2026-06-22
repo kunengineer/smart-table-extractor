@@ -223,6 +223,22 @@ st.set_page_config(
 st.html("""
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
+/* Hide Streamlit header (Share, Star, Edit, Git, etc.) */
+header[data-testid="stHeader"], [data-testid="stHeader"] {
+    visibility: hidden !important;
+    height: 0px !important;
+}
+
+/* Hide Streamlit footer */
+footer {
+    visibility: hidden !important;
+}
+
+/* Hide Manage app button at the bottom right */
+div[data-testid="stManageAppButton"] {
+    display: none !important;
+}
+
 html, body, [class*="css"] {
     font-family: 'Inter', sans-serif;
 }
