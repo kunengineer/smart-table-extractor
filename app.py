@@ -211,7 +211,7 @@ def clean_loaded_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 # PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Table → Excel",
+    page_title="AI Table Extractor",
     page_icon="📊",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -272,17 +272,100 @@ h1, h2, h3, .top-bar h1 {
     background: linear-gradient(-45deg, #1F4E79, #2E75B6, #0F2B48, #2A5C8A) !important;
     background-size: 400% 400% !important;
     animation: gradientBG 12s ease infinite !important;
-    border-radius: 16px; 
-    padding: 35px 28px; 
-    margin-bottom: 25px; 
+    border-radius: 20px; 
+    padding: 40px 28px; 
+    margin-bottom: 30px; 
     color: #ffffff;
-    box-shadow: 0 10px 30px rgba(31, 78, 121, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 15px 35px rgba(31, 78, 121, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.15);
     text-align: center;
+    position: relative;
+    overflow: hidden;
     transition: all 0.3s ease;
 }
-.top-bar h1 { margin: 0; font-size: 1.9rem; font-weight: 700; letter-spacing: -0.5px; }
-.top-bar p  { margin: 10px 0 0; font-size: 0.9rem; opacity: 0.90; line-height: 1.5; }
+.top-bar::before {
+    content: "";
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.07) 0%, transparent 60%);
+    pointer-events: none;
+}
+.top-bar-title-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+}
+.top-bar-icon {
+    font-size: 2.2rem;
+    filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.25));
+    display: inline-block;
+    animation: pulse 2.5s infinite ease-in-out;
+}
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+    100% { transform: scale(1); }
+}
+.top-bar h1 { 
+    margin: 0; 
+    font-size: 2.1rem; 
+    font-weight: 700; 
+    letter-spacing: -0.5px;
+    background: linear-gradient(to right, #FFFFFF, #E2F1FF);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.top-bar p.top-bar-subtitle  { 
+    margin: 12px 0 0; 
+    font-size: 0.95rem; 
+    opacity: 0.92; 
+    line-height: 1.6; 
+}
+.top-bar-badges {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 20px 0 15px;
+}
+.top-bar-badge {
+    background: rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 50px;
+    padding: 6px 16px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #ffffff;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    transition: all 0.3s ease;
+}
+.top-bar-badge:hover {
+    background: rgba(255, 255, 255, 0.22);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 15px rgba(255, 255, 255, 0.15);
+}
+.top-bar-features {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 15px;
+    font-size: 0.85rem;
+    opacity: 0.85;
+}
+.top-bar-features .separator {
+    color: rgba(255, 255, 255, 0.4);
+    font-weight: bold;
+}
 
 .stat-row { display: flex; gap: 12px; flex-wrap: wrap; margin: 20px 0; }
 
@@ -436,9 +519,21 @@ if _MISSING:
 # ══════════════════════════════════════════════════════════════════════════════
 st.html("""
 <div class="top-bar">
-  <h1>📊 Chuyển Đổi Bảng Dữ Liệu → Excel</h1>
-  <p>PDF (text & scan) · Word (.doc / .docx) · Hình ảnh (.png / .jpg / .jpeg)
-     · Tự động nhận diện cấu trúc bảng, không giới hạn số cột</p>
+  <div class="top-bar-title-wrapper">
+    <span class="top-bar-icon">📊</span>
+    <h1>Document → Excel</h1>
+  </div>
+  <p class="top-bar-subtitle">Giải pháp trích xuất bảng biểu thông minh từ tài liệu đa định dạng</p>
+  <div class="top-bar-badges">
+    <span class="top-bar-badge">📄 PDF (Text & Scan)</span>
+    <span class="top-bar-badge">📝 Word (.doc, .docx)</span>
+    <span class="top-bar-badge">🖼️ Hình ảnh (PNG, JPG, JPEG)</span>
+  </div>
+  <div class="top-bar-features">
+    <span>✨ Tự động nhận diện cấu trúc bảng</span>
+    <span class="separator">·</span>
+    <span>⚡ Không giới hạn số cột</span>
+  </div>
 </div>
 """)
 
